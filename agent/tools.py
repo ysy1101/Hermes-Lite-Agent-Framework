@@ -76,104 +76,112 @@ def tool_get_stats() -> str:
     return json.dumps(stats, ensure_ascii=False, indent=2)
 
 
-# 工具定义（供 OpenAI Function Calling 使用）
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_knowledge",
-            "description": "在知识库中语义搜索相关内容。当你需要回答用户问题时，先用此工具检索相关文档。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "搜索查询，用自然语言描述你想找什么"
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "description": "返回结果数量，默认 5"
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_document",
-            "description": "读取知识库中某个文档的完整内容",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "filepath": {
-                        "type": "string",
-                        "description": "文档路径，如 data/xxx.md"
-                    }
-                },
-                "required": ["filepath"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_documents",
-            "description": "列出知识库中所有文档",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "build_index",
-            "description": "构建或重建知识库的向量索引。添加新文档后需要调用此工具。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "data_dir": {
-                        "type": "string",
-                        "description": "文档目录，默认 data"
-                    }
-                },
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_stats",
-            "description": "查看知识库统计信息，了解有多少文档和文本块",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }
-    }
-]
+# ---- 工具注册中心集成 ----
 
-# 工具函数字典
+from .registry import BaseTool, ToolRegistry
+
+
+class SearchKnowledgeTool(BaseTool):
+    name = "search_knowledge"
+    description = "在知识库中语义搜索相关内容。当你需要回答用户问题时，先用此工具检索相关文档。"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "搜索查询，用自然语言描述你想找什么"
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "返回结果数量，默认 5"
+            }
+        },
+        "required": ["query"]
+    }
+
+    def execute(self, args: dict) -> str:
+        return tool_search_knowledge(**args)
+
+
+class ReadDocumentTool(BaseTool):
+    name = "read_document"
+    description = "读取知识库中某个文档的完整内容"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "filepath": {
+                "type": "string",
+                "description": "文档路径，如 data/xxx.md"
+            }
+        },
+        "required": ["filepath"]
+    }
+
+    def execute(self, args: dict) -> str:
+        return tool_read_document(**args)
+
+
+class ListDocumentsTool(BaseTool):
+    name = "list_documents"
+    description = "列出知识库中所有文档"
+    parameters = {
+        "type": "object",
+        "properties": {},
+        "required": []
+    }
+
+    def execute(self, args: dict) -> str:
+        return tool_list_documents(**args)
+
+
+class BuildIndexTool(BaseTool):
+    name = "build_index"
+    description = "构建或重建知识库的向量索引。添加新文档后需要调用此工具。"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "data_dir": {
+                "type": "string",
+                "description": "文档目录，默认 data"
+            }
+        },
+        "required": []
+    }
+
+    def execute(self, args: dict) -> str:
+        return tool_build_index(**args)
+
+
+class GetStatsTool(BaseTool):
+    name = "get_stats"
+    description = "查看知识库统计信息，了解有多少文档和文本块"
+    parameters = {
+        "type": "object",
+        "properties": {},
+        "required": []
+    }
+
+    def execute(self, args: dict) -> str:
+        return tool_get_stats()
+
+
+# 模块级全局注册中心
+registry = ToolRegistry()
+registry.register(SearchKnowledgeTool())
+registry.register(ReadDocumentTool())
+registry.register(ListDocumentsTool())
+registry.register(BuildIndexTool())
+registry.register(GetStatsTool())
+
+# 向后兼容：TOOLS 和 TOOL_FUNCTIONS 从 registry 生成
+TOOLS = registry.export_openai_tools()
+
 TOOL_FUNCTIONS = {
-    "search_knowledge": tool_search_knowledge,
-    "read_document": tool_read_document,
-    "list_documents": tool_list_documents,
-    "build_index": tool_build_index,
-    "get_stats": tool_get_stats,
+    name: tool.execute
+    for name, tool in registry._tools.items()
 }
 
 
 def execute_tool(name: str, args: Dict[str, Any]) -> str:
-    """执行工具调用"""
-    if name not in TOOL_FUNCTIONS:
-        return f"错误：未知工具 {name}"
-    try:
-        return TOOL_FUNCTIONS[name](**args)
-    except Exception as e:
-        return f"执行 {name} 时出错：{str(e)}"
+    """执行工具调用（委托给 registry）"""
+    return registry.execute(name, args)

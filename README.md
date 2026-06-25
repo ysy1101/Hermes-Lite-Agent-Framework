@@ -1,18 +1,19 @@
-# Mini-Hermes Agent | RAG知识库问答智能体
+# Mini-Hermes Agent Runtime | 轻量级 Agent 运行时框架
 
-参考 Hermes Agent 架构实现的轻量级 Agent Runtime，支持文档知识库检索、长期记忆管理与工具调用能力，实现基于 RAG 的知识问答系统。
+参考 Hermes Agent 架构实现轻量级 Agent Runtime，在 ReAct Agent 基础上引入 State 管理、Workflow 编排与工具注册机制，实现支持长期记忆与知识库检索的智能问答系统。
 
 ## 技术栈
 
-Python / ChromaDB / OpenAI API / ReAct Agent / RAG / Memory / Tool Calling
+Python / ChromaDB / OpenAI API / ReAct / RAG / Tool Calling / Workflow / State Management
 
 ## 核心工作
 
-- 设计 Agent Loop，支持 Thought → Action → Observation 的 ReAct 推理流程
-- 实现 Tool Registry，集成知识检索、文档读取、索引构建等 5 类工具
-- 基于 ChromaDB 构建 RAG 检索系统，支持 PDF/Markdown/TXT 文档向量化与语义搜索
-- 实现 Memory 模块，保存用户偏好与历史对话，实现简单长期记忆
-- 兼容 OpenAI API 标准接口，支持 DeepSeek、通义千问、OpenRouter、Ollama 等模型接入
+- 设计 AgentState 管理运行时上下文，实现多节点间状态共享与传递
+- 基于 ReAct 实现 Thought → Action → Observation 推理循环，支持多轮工具调用
+- 实现 Tool Registry，支持知识检索、文档读取、索引构建等工具动态注册与调用
+- 基于 ChromaDB 构建 RAG 检索链路，实现 PDF/Markdown/TXT 文档向量化与语义搜索
+- 实现 Trace 机制，记录 Agent 推理过程、工具调用结果与执行轨迹，支持调试与回放
+- 兼容 OpenAI API 标准协议，支持 DeepSeek、OpenRouter、Ollama 等模型接入
 
 ## 安装
 
@@ -63,6 +64,10 @@ mini-hermes-agent/
 ├── agent/
 │   ├── __init__.py      # 模块导出
 │   ├── loop.py          # Agent 主循环（ReAct 推理）
+│   ├── state.py         # AgentState 运行时状态管理
+│   ├── registry.py      # Tool Registry 工具注册中心
+│   ├── trace.py         # Trace 执行轨迹记录
+│   ├── workflow.py      # Workflow 编排引擎
 │   ├── memory.py        # 长期记忆系统
 │   ├── skills.py        # 技能系统
 │   ├── document.py      # 文档解析（PDF/MD/TXT）

@@ -1,17 +1,21 @@
 """
-Agent 主循环模块（RAG 知识库版）
+Agent 主循环模块 — ReAct 推理引擎
+基于 Thought → Action → Observation 循环，集成状态管理、工具注册与 Trace 记录
 """
 import json
+import time
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 
 from .memory import MemoryManager
 from .skills import SkillManager
-from .tools import TOOLS, execute_tool
+from .tools import registry
+from .state import AgentState, AgentStatus
+from .trace import Trace
 
 
 class RAGAgent:
-    """RAG 知识库问答智能体"""
+    """Mini-Hermes Agent Runtime — 轻量级 ReAct Agent"""
 
     def __init__(
         self,
@@ -22,6 +26,8 @@ class RAGAgent:
         skills_dir: str = "skills",
         data_dir: str = "data",
         max_steps: int = 10,
+        enable_trace: bool = True,
+        enable_state: bool = True,
     ):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
@@ -30,6 +36,13 @@ class RAGAgent:
         self.data_dir = data_dir
         self.max_steps = max_steps
         self.messages: List[Dict[str, Any]] = []
+
+        # 新增组件
+        self.enable_trace = enable_trace
+        self.enable_state = enable_state
+        self.registry = registry
+        self.state = AgentState(max_steps=max_steps)
+        self.trace = Trace(enabled=enable_trace)
 
     def _build_system_prompt(self) -> str:
         """构建系统提示词"""
@@ -64,7 +77,14 @@ class RAGAgent:
         return prompt
 
     def run(self, task: str) -> str:
-        """运行 Agent 回答问题"""
+        """运行 Agent 回答问题（单轮）"""
+        # 初始化状态和 Trace
+        if self.enable_state:
+            self.state.reset(task)
+            self.state.status = AgentStatus.RUNNING
+        if self.enable_trace:
+            self.trace.start()
+
         system_prompt = self._build_system_prompt()
         self.messages = [
             {"role": "system", "content": system_prompt},
@@ -74,23 +94,46 @@ class RAGAgent:
         final_answer = ""
 
         for step in range(self.max_steps):
+            if self.enable_state:
+                self.state.step = step + 1
+                self.state.status = AgentStatus.THINKING
+
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=self.messages,
-                    tools=TOOLS,
+                    tools=self.registry.export_openai_tools(),
                     tool_choice="auto",
                     temperature=0.3,
                 )
             except Exception as e:
+                if self.enable_state:
+                    self.state.status = AgentStatus.ERROR
                 return f"调用模型时出错：{str(e)}"
 
             msg = response.choices[0].message
             self.messages.append(msg)
 
+            # 提取 token usage
+            token_usage = None
+            if hasattr(response, 'usage') and response.usage:
+                token_usage = {
+                    "prompt_tokens": response.usage.prompt_tokens,
+                    "completion_tokens": response.usage.completion_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                }
+
             if not msg.tool_calls:
                 final_answer = msg.content or "任务完成"
+                if self.enable_state:
+                    self.state.final_answer = final_answer
+                    self.state.status = AgentStatus.FINISHED
+                if self.enable_trace:
+                    self.trace.record_final(final_answer)
                 break
+
+            # 模型在工具调用前的思考内容
+            thought = msg.content or ""
 
             for tool_call in msg.tool_calls:
                 tool_name = tool_call.function.name
@@ -99,7 +142,26 @@ class RAGAgent:
                 except json.JSONDecodeError:
                     tool_args = {}
 
-                result = execute_tool(tool_name, tool_args)
+                if self.enable_state:
+                    self.state.status = AgentStatus.CALLING_TOOL
+
+                step_start = time.time()
+                result = self.registry.execute(tool_name, tool_args)
+                step_duration = (time.time() - step_start) * 1000
+
+                if self.enable_state:
+                    self.state.record_tool_call(tool_name, tool_args, result)
+
+                if self.enable_trace:
+                    self.trace.record_step(
+                        step=step + 1,
+                        thought=thought,
+                        action=tool_name,
+                        action_args=tool_args,
+                        observation=result,
+                        duration_ms=step_duration,
+                        token_usage=token_usage,
+                    )
 
                 self.messages.append({
                     "role": "tool",
@@ -109,6 +171,9 @@ class RAGAgent:
                 })
         else:
             final_answer = "已达到最大步骤数，任务未完全完成。"
+            if self.enable_state:
+                self.state.final_answer = final_answer
+                self.state.status = AgentStatus.MAX_STEPS
 
         return final_answer
 
@@ -118,12 +183,17 @@ class RAGAgent:
             return self.run(message)
 
         self.messages.append({"role": "user", "content": message})
+
         for step in range(self.max_steps):
+            if self.enable_state:
+                self.state.step = step + 1
+                self.state.status = AgentStatus.THINKING
+
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=self.messages,
-                    tools=TOOLS,
+                    tools=self.registry.export_openai_tools(),
                     tool_choice="auto",
                     temperature=0.3,
                 )
@@ -133,8 +203,22 @@ class RAGAgent:
             msg = response.choices[0].message
             self.messages.append(msg)
 
+            # 提取 token usage
+            token_usage = None
+            if hasattr(response, 'usage') and response.usage:
+                token_usage = {
+                    "prompt_tokens": response.usage.prompt_tokens,
+                    "completion_tokens": response.usage.completion_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                }
+
             if not msg.tool_calls:
-                return msg.content or "好的"
+                final_answer = msg.content or "好的"
+                if self.enable_trace:
+                    self.trace.record_final(final_answer)
+                return final_answer
+
+            thought = msg.content or ""
 
             for tool_call in msg.tool_calls:
                 tool_name = tool_call.function.name
@@ -143,7 +227,26 @@ class RAGAgent:
                 except json.JSONDecodeError:
                     tool_args = {}
 
-                result = execute_tool(tool_name, tool_args)
+                if self.enable_state:
+                    self.state.status = AgentStatus.CALLING_TOOL
+
+                step_start = time.time()
+                result = self.registry.execute(tool_name, tool_args)
+                step_duration = (time.time() - step_start) * 1000
+
+                if self.enable_state:
+                    self.state.record_tool_call(tool_name, tool_args, result)
+
+                if self.enable_trace:
+                    self.trace.record_step(
+                        step=step + 1,
+                        thought=thought,
+                        action=tool_name,
+                        action_args=tool_args,
+                        observation=result,
+                        duration_ms=step_duration,
+                        token_usage=token_usage,
+                    )
 
                 self.messages.append({
                     "role": "tool",
@@ -153,3 +256,11 @@ class RAGAgent:
                 })
 
         return "已达到最大步骤数"
+
+    def get_trace(self) -> Optional[dict]:
+        """获取 Trace 数据（用于调试）"""
+        return self.trace.export() if self.trace else None
+
+    def get_state(self) -> Optional[dict]:
+        """获取当前状态（用于调试）"""
+        return self.state.to_dict() if self.state else None
