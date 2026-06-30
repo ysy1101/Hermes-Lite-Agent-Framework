@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-RAG 知识库问答智能体 - 主入口
+Mini-Hermes Agent Runtime - 主入口
 """
 import os
 import sys
 import argparse
 from dotenv import load_dotenv
 
-from agent import RAGAgent, build_index
+from agent import RAGAgent, build_index, VectorRetriever
+from agent.eval import RAGEvaluator, create_sample_test_cases
 
 
 def cmd_index(args):
     """构建索引子命令"""
-    print("📚 正在构建知识库索引...")
+    print("[INDEX] 正在构建知识库索引...")
     result = build_index(args.data_dir, args.index_dir)
     print(result)
 
@@ -24,9 +25,9 @@ def cmd_query(args):
         return
 
     agent = _create_agent(api_key, args)
-    print(f"🤖 问题：{args.question}\n")
+    print(f"[Q] 问题：{args.question}\n")
     result = agent.run(args.question)
-    print(f"\n📋 回答：\n{result}")
+    print(f"\n[A] 回答：\n{result}")
 
 
 def cmd_interactive(args):
@@ -36,19 +37,31 @@ def cmd_interactive(args):
         return
 
     agent = _create_agent(api_key, args)
-    print("🤖 RAG 知识库问答 - 交互模式")
-    print(f"📚 知识库：{args.data_dir}/")
-    print("输入 'exit' 退出，'stats' 查看统计\n")
+    print("=" * 50)
+    print("Mini-Hermes Agent Runtime - 交互模式")
+    print(f"知识库: {args.data_dir}/")
+    print("输入 'exit' 退出, 'stats' 查看统计, 'trace' 查看轨迹")
+    print("=" * 50)
 
     while True:
         try:
-            question = input("你: ").strip()
+            question = input("\n你: ").strip()
             if question.lower() in ("exit", "quit", "退出"):
-                print("👋 再见！")
+                print("再见!")
                 break
             if question.lower() == "stats":
                 from agent.tools import tool_get_stats
                 print(f"\n{tool_get_stats()}\n")
+                continue
+            if question.lower() == "trace":
+                trace = agent.get_trace()
+                if trace:
+                    print(f"\n[TRACE] {trace['total_steps']} 步, "
+                          f"耗时 {trace['total_duration_ms']}ms")
+                    for s in trace['steps']:
+                        print(f"  Step{s['step']}: {s['action']} ({s['duration_ms']}ms)")
+                else:
+                    print("\n[TRACE] 无轨迹数据")
                 continue
             if not question:
                 continue
@@ -57,16 +70,16 @@ def cmd_interactive(args):
             result = agent.chat(question)
             print(f"\nAgent: {result}\n")
         except KeyboardInterrupt:
-            print("\n👋 再见！")
+            print("\n再见!")
             break
         except Exception as e:
-            print(f"❌ 错误：{e}")
+            print(f"[ERROR] {e}")
 
 
 def _get_api_key() -> str:
     api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
     if not api_key:
-        print("❌ 错误：未设置 API Key")
+        print("[ERROR] 未设置 API Key")
         print("请设置环境变量 OPENAI_API_KEY 或在 .env 文件中配置")
     return api_key
 
@@ -86,17 +99,56 @@ def _create_agent(api_key: str, args):
     )
 
 
+def _setup_encoding():
+    """Windows 下强制输出 UTF-8"""
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def cmd_eval(args):
+    """检索质量评估子命令"""
+    test_path = args.test_file or os.path.join(args.data_dir, "test_cases.json")
+
+    if not os.path.exists(test_path):
+        print(f"[ERROR] 测试用例文件不存在: {test_path}")
+        print(f"运行 python main.py gen-test 生成示例测试用例")
+        return
+
+    retriever = VectorRetriever(persist_dir=args.index_dir)
+    if not retriever.available:
+        print("[ERROR] ChromaDB 不可用，请先安装 chromadb")
+        return
+
+    evaluator = RAGEvaluator(retriever)
+    evaluator.load_test_cases(test_path)
+    metrics = evaluator.evaluate(top_k=args.top_k)
+    print(evaluator.report(metrics))
+
+
+def cmd_gen_test(args):
+    """生成示例测试用例"""
+    result = create_sample_test_cases(args.data_dir)
+    print(result)
+
+
 def main():
+    _setup_encoding()
     load_dotenv()
 
     parser = argparse.ArgumentParser(
-        description="RAG 知识库问答智能体",
+        description="Mini-Hermes Agent Runtime - 轻量级 RAG 知识库问答智能体",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-使用示例：
+使用示例:
   python main.py index                          # 构建知识库索引
   python main.py query "什么是RAG"              # 单次查询
   python main.py -i                             # 交互模式
+  python main.py eval --top-k 5                 # 检索质量评估
+  python main.py gen-test                       # 生成测试用例模板
         """
     )
 
@@ -118,6 +170,14 @@ def main():
 
     parser_interactive = subparsers.add_parser("interactive", aliases=["i"], help="交互模式")
     parser_interactive.set_defaults(func=cmd_interactive)
+
+    parser_eval = subparsers.add_parser("eval", help="检索质量评估 (Precision/Recall/MRR)")
+    parser_eval.add_argument("--test-file", default=None, help="测试用例 JSON 文件路径")
+    parser_eval.add_argument("--top-k", type=int, default=5, help="评估的 top-k 值 (默认 5)")
+    parser_eval.set_defaults(func=cmd_eval)
+
+    parser_gen = subparsers.add_parser("gen-test", help="生成示例测试用例模板")
+    parser_gen.set_defaults(func=cmd_gen_test)
 
     args = parser.parse_args()
 

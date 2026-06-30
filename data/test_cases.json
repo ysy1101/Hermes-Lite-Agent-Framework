@@ -1,0 +1,22 @@
+[
+    {
+        "query": "什么是RAG技术",
+        "relevant_sources": ["RAG技术入门指南.md"]
+    },
+    {
+        "query": "RAG相比于传统大模型有什么优势",
+        "relevant_sources": ["RAG技术入门指南.md"]
+    },
+    {
+        "query": "向量数据库在RAG中的作用",
+        "relevant_sources": ["RAG技术入门指南.md"]
+    },
+    {
+        "query": "RAG系统的技术栈有哪些",
+        "relevant_sources": ["RAG技术入门指南.md"]
+    },
+    {
+        "query": "知识库中关于检索生成的内容",
+        "relevant_sources": ["RAG技术入门指南.md"]
+    }
+]

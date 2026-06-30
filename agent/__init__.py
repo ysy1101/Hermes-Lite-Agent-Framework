@@ -20,6 +20,7 @@ from .workflow import (
     WorkflowEngine,
     create_knowledge_inspection_workflow,
 )
+from .eval import RAGEvaluator, create_sample_test_cases
 
 __all__ = [
     # 原有模块
@@ -45,4 +46,6 @@ __all__ = [
     "WorkflowStep",
     "WorkflowEngine",
     "create_knowledge_inspection_workflow",
+    "RAGEvaluator",
+    "create_sample_test_cases",
 ]
